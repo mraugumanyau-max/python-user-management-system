@@ -1,4 +1,4 @@
-# USER MANAGEMENT SYSTEM
+# Python User Management System
 
 ## 1. About the Program
 
@@ -14,7 +14,7 @@ The program can:
 
 - **Register:** Create a new user account.
 - **Login:** Allow registered users to access their accounts.
-- **View Profile:** Display a user's personal details, if available in the dashboard.
+- **View Profile:** Display a user's personal details.
 - **Change Password:** Allow users to create a new password.
 - **Delete Account:** Remove a user's account.
 - **Search User:** Find a registered user using their username.
@@ -30,12 +30,10 @@ The program can:
 
 ## 4. How to Run the Program
 
-Follow these steps:
-
 1. Make sure Python is installed on your computer.
 2. Open the project folder.
 3. Open Command Prompt or PowerShell.
-4. Run this command:
+4. Run:
 
    `python main.py`
 
@@ -52,16 +50,16 @@ Follow these steps:
 ## 6. Project Files
 
 - `main.py` – Contains the Python code.
-- `users.csv` – Stores registered user information.
+- `users.csv` – Stores registered user information locally. This file is excluded from GitHub.
 - `README.md` – Explains how to use the program.
+- `.gitignore` – Prevents sensitive and unnecessary files from being uploaded.
 
 ## 7. Important Information
 
 - Choose a password with at least 6 characters.
 - Each username must be unique.
 - Do not share your password with other people.
-- Do not delete `users.csv` because it contains registered user information.
-- Always keep a backup of your `users.csv` file.
+- Keep a secure backup of your local `users.csv` file.
 
 ## 8. Purpose of the Project
 
