@@ -14,3 +14,7 @@ users.csv
 
 # Ignore editor settings
 .vscode/
+
+#ignore database.py
+database.py
+users.db
