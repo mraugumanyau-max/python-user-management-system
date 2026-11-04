@@ -1,20 +1,14 @@
-# Ignore Python virtual environments
-venv/
-.venv/
 
-# Ignore Python cache files
+# SQLite database - keep user records private
+users.db
+
+# Python cache files
 __pycache__/
 *.pyc
 
-# Ignore user data
-users.csv
+# Virtual environments
+venv/
+.venv/
 
-# Ignore secret environment files
+# Environment variables and secrets
 .env
-
-# Ignore editor settings
-.vscode/
-
-#ignore database.py
-database.py
-users.db

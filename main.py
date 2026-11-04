@@ -1,3 +1,4 @@
+
 # ==========================
 # IMPORTS
 # ==========================
@@ -6,25 +7,34 @@ import sqlite3
 import hashlib
 import secrets
 import hmac
+import json
+
 from datetime import datetime
-
-# Name of the CSV file where user details are stored
-FILE_NAME = "users.users.db"
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 
 # ==========================
-# MAIN MENU
+# APPLICATION CONFIGURATION
 # ==========================
 
-def main():
-    print("\n================================")
-    print("      USER MANAGEMENT SYSTEM")
-    print("================================")
-    print("1. Register")
-    print("2. Login")
-    print("3. Search User")
-    print("4. Exit")
-    print("================================")
+FILE_NAME = "users.db"
+
+HOST = "localhost"
+PORT = 8000
+
+
+# ==========================
+# DATABASE CONNECTION
+# ==========================
+
+def get_connection():
+    connection = sqlite3.connect(FILE_NAME)
+
+    # Allows us to access database columns by their names
+    connection.row_factory = sqlite3.Row
+
+    return connection
 
 
 # ==========================
@@ -45,26 +55,26 @@ def hash_password(password):
         600000
     )
 
-    # Convert the salt and password hash into hexadecimal
+    # Convert salt and hash into hexadecimal
     salt = salt.hex()
     password_hash = password_hash.hex()
 
-    # Return the complete password information as a string
+    # Return the complete password information
     return f"pbkdf2_sha256$600000${salt}${password_hash}"
 
 
-# Verify whether the password entered during login is correct
+# Verify whether an entered password is correct
 def verify_password(password, stored_password):
 
     try:
         # Separate the stored password information
         algorithm, iterations, salt, stored_hash = stored_password.split("$")
 
-        # Confirm that the supported hashing algorithm was used
+        # Confirm the supported hashing algorithm
         if algorithm != "pbkdf2_sha256":
             return False
 
-        # Convert the stored salt from hexadecimal into bytes
+        # Convert the salt from hexadecimal into bytes
         salt = bytes.fromhex(salt)
 
         # Hash the password entered by the user
@@ -81,22 +91,6 @@ def verify_password(password, stored_password):
     except (ValueError, TypeError, AttributeError):
         return False
 
-# ==========================
-# DATABASE CONNECTION
-# ==========================
-
-DATABASE_NAME = "users.db"
-
-
-def get_connection():
-
-    connection = sqlite3.connect(DATABASE_NAME)
-
-    # Allow access to columns using their names
-    connection.row_factory = sqlite3.Row
-
-    return connection
-
 
 # ==========================
 # CREATE USERS TABLE
@@ -109,7 +103,7 @@ def initialize_database():
     try:
         cursor = connection.cursor()
 
-        # Create the users table if it does not already exist
+        # Create the users table if it does not exist
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,454 +124,488 @@ def initialize_database():
 
     finally:
         connection.close()
+
+
 # ==========================
-# USER REGISTRATION
+# JSON RESPONSE
 # ==========================
 
-def register():
+def send_json_response(handler, status_code, data):
 
-    print("\n--- USER REGISTRATION ---")
+    # Convert Python dictionary into JSON bytes
+    response = json.dumps(data).encode("utf-8")
+
+    # Send HTTP status code
+    handler.send_response(status_code)
+
+    # Send response headers
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(response)))
+
+    # Finish sending headers
+    handler.end_headers()
+
+    # Send JSON response body
+    handler.wfile.write(response)
+
+
+# ==========================
+# READ JSON REQUEST
+# ==========================
+
+def read_json_request(handler):
 
     try:
-        # Collect user details
-        name = input("Enter your full name: ").strip()
-        username = input("Enter your username: ").strip()
-        password = input("Enter your password: ")
-        confirm_password = input("Confirm your password: ")
-        age_input = input("Enter your age: ").strip()
+        # Get the size of the incoming request body
+        content_length = int(handler.headers.get("Content-Length", 0))
 
-        # Check that no field is empty
-        if not all([name, username, password, confirm_password, age_input]):
-            raise ValueError("No field should be empty.")
+        if content_length <= 0:
+            raise ValueError("Request body is empty.")
 
-        # Check password length
-        if len(password) < 6:
-            raise ValueError("Password must have at least 6 characters.")
+        # Read the request body
+        body = handler.rfile.read(content_length)
 
-        # Check password confirmation
-        if password != confirm_password:
-            raise ValueError("Passwords do not match.")
+        # Convert JSON data into a Python object
+        data = json.loads(body.decode("utf-8"))
 
-        # Convert age into an integer
-        try:
-            age = int(age_input)
-        except ValueError:
-            raise ValueError("Age must be a positive integer.")
+        # Ensure the JSON data is an object/dictionary
+        if not isinstance(data, dict):
+            raise ValueError("JSON data must be an object.")
 
-        # Check that age is positive
-        if age <= 0:
-            raise ValueError("Age must be a positive integer.")
+        return data
 
-        # Capture registration date and time
-        registration_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Hash the password before saving it
-        hashed_password = hash_password(password)
-
-        # Connect to the database
-        connection = get_connection()
-
-        try:
-            cursor = connection.cursor()
-
-            # Insert the new user into the SQL database
-            cursor.execute("""
-                INSERT INTO users
-                (name, username, password, age, registration_date)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                name,
-                username,
-                hashed_password,
-                age,
-                registration_date
-            ))
-
-            # Save changes to the database
-            connection.commit()
-
-        finally:
-            connection.close()
-
-        print("Registration successful!")
-
-    except sqlite3.IntegrityError:
-        print("Registration error: Username already exists.")
-
-    except ValueError as error:
-        print(f"Registration error: {error}")
-
-    except sqlite3.Error as error:
-        print(f"Database error: {error}")
-
-# ==========================
-# USER LOGIN
-# ==========================
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError(f"Invalid request data: {error}")
 
 
 # ==========================
-# USER LOGIN
+# API REQUEST HANDLER
 # ==========================
 
-def login():
+class APIHandler(BaseHTTPRequestHandler):
 
-    print("\n===== USER LOGIN =====")
+    # ==========================
+    # HANDLE GET REQUESTS
+    # ==========================
 
-    attempts = 0
-    max_attempts = 3
+    def do_GET(self):
 
-    while attempts < max_attempts:
+        # Parse the requested URL
+        parsed_url = urlparse(self.path)
 
-        # Collect login details
-        username = input("Enter your username: ").strip()
-        password = input("Enter your password: ")
+        # Welcome endpoint
+        if parsed_url.path == "/":
 
-        try:
-            # Connect to the database
-            connection = get_connection()
+            send_json_response(self, 200, {
+                "message": "Welcome to User Management API"
+            })
+
+        # Search user endpoint
+        elif parsed_url.path == "/search":
+
+            connection = None
 
             try:
+                # Extract username from URL query parameters
+                query_parameters = parse_qs(parsed_url.query)
+
+                username = query_parameters.get("username", [None])[0]
+
+                # Validate username
+                if not isinstance(username, str) or not username.strip():
+                    raise ValueError("Please provide a username.")
+
+                # Connect to database
+                connection = get_connection()
                 cursor = connection.cursor()
 
-                # Search for the user using their username
+                # Search for user
                 cursor.execute("""
-                    SELECT * FROM users
+                    SELECT id, name, username, age, registration_date
+                    FROM users
                     WHERE username = ?
-                """, (username,))
+                """, (username.strip(),))
 
-                user_row = cursor.fetchone()
+                user = cursor.fetchone()
+
+                # Check whether user exists
+                if user is None:
+                    send_json_response(self, 404, {
+                        "error": "User not found."
+                    })
+
+                else:
+                    send_json_response(self, 200, {
+                        "message": "User found successfully.",
+                        "user": dict(user)
+                    })
+
+            except ValueError as error:
+                send_json_response(self, 400, {
+                    "error": str(error)
+                })
+
+            except sqlite3.Error:
+                send_json_response(self, 500, {
+                    "error": "A database error occurred."
+                })
 
             finally:
-                connection.close()
-
-            # Check whether the username exists
-            if user_row is None:
-                raise ValueError("Invalid username or password.")
-
-            # Convert SQLite row into a normal Python dictionary
-            user = dict(user_row)
-
-            # Verify the entered password against the stored hash
-            if not verify_password(password, user["password"]):
-                raise ValueError("Invalid username or password.")
-
-            # Login successful
-            print("\nLogin successful!")
-
-            # Open the user dashboard
-            dashboard(user)
-
-            return
-
-        except ValueError as error:
-
-            attempts += 1
-
-            print(f"Login error: {error}")
-
-            remaining = max_attempts - attempts
-
-            if remaining > 0:
-                print(f"You have {remaining} attempt(s) remaining.")
-
-            else:
-                print("Maximum login attempts reached!")
-                print("Returning to the main menu.")
-
-        except sqlite3.Error as error:
-
-            print(f"Database error: {error}")
-            return
-
-
-
-# ==========================
-# CHANGE USER PASSWORD
-# ==========================
-
-def change_password(user):
-
-    print("\n===== CHANGE PASSWORD =====")
-
-    try:
-        # Ask for the current password
-        current_password = input("Enter your current password: ")
-
-        # Verify the current password
-        if not verify_password(current_password, user["password"]):
-            raise ValueError("Incorrect current password.")
-
-        # Ask for the new password
-        new_password = input("Enter your new password: ")
-        confirm_password = input("Confirm your new password: ")
-
-        # Check that password fields are not empty
-        if not new_password or not confirm_password:
-            raise ValueError("Password fields cannot be empty.")
-
-        # Check password length
-        if len(new_password) < 6:
-            raise ValueError("Password must have at least 6 characters.")
-
-        # Check password confirmation
-        if new_password != confirm_password:
-            raise ValueError("New passwords do not match.")
-
-        # Hash the new password
-        hashed_password = hash_password(new_password)
-
-        # Connect to the SQLite database
-        connection = get_connection()
-
-        try:
-            cursor = connection.cursor()
-
-            # Update the password for the logged-in user
-            cursor.execute("""
-                UPDATE users
-                SET password = ?
-                WHERE id = ?
-            """, (hashed_password, user["id"]))
-
-            # Check whether a user record was updated
-            if cursor.rowcount == 0:
-                raise ValueError("User account could not be found.")
-
-            # Save changes to the database
-            connection.commit()
-
-        finally:
-            connection.close()
-
-        # Update the user's password in memory
-        user["password"] = hashed_password
-
-        print("Password changed successfully!")
-
-    except ValueError as error:
-        print(f"Password error: {error}")
-
-    except sqlite3.Error as error:
-        print(f"Database error: {error}")
-
-
-
-# ==========================
-# DELETE USER ACCOUNT
-# ==========================
-
-def delete_account(user):
-
-    print("\n--- DELETE ACCOUNT ---")
-
-    try:
-        # Ask for the user's password
-        password = input("Enter your password to confirm deletion: ")
-
-        # Verify the password
-        if not verify_password(password, user["password"]):
-            raise ValueError(
-                "Incorrect password. Account deletion cancelled."
-            )
-
-        # Ask for confirmation
-        confirmation = input(
-            "Are you sure you want to delete your account? (yes/no): "
-        ).strip().lower()
-
-        if confirmation != "yes":
-            print("Account deletion cancelled.")
-            return False
-
-        # Connect to the SQLite database
-        connection = get_connection()
-
-        try:
-            cursor = connection.cursor()
-
-            # Delete only the currently logged-in user's account
-            cursor.execute("""
-                DELETE FROM users
-                WHERE id = ?
-            """, (user["id"],))
-
-            # Check whether a user was deleted
-            if cursor.rowcount == 0:
-                raise ValueError("User account could not be found.")
-
-            # Save the deletion
-            connection.commit()
-
-        finally:
-            connection.close()
-
-        print("Your account has been deleted successfully!")
-
-        return True
-
-    except ValueError as error:
-        print(f"Deletion error: {error}")
-
-    except sqlite3.Error as error:
-        print(f"Database error: {error}")
-
-    return False
-
-
-
-
-# ==========================
-# SEARCH USER BY USERNAME
-# ==========================
-
-def search_user():
-
-    print("\n===== SEARCH USER =====")
-
-    try:
-        # Ask for the username to search
-        search_username = input("Enter username to search: ").strip()
-
-        # Check that the username is not empty
-        if not search_username:
-            raise ValueError("Username cannot be empty.")
-
-        # Connect to the SQLite database
-        connection = get_connection()
-
-        try:
-            cursor = connection.cursor()
-
-            # Search for the user in the database
-            cursor.execute("""
-                SELECT name, username
-                FROM users
-                WHERE username = ?
-            """, (search_username,))
-
-            # Retrieve the matching user
-            user = cursor.fetchone()
-
-        finally:
-            connection.close()
-
-        # Check whether the user exists
-        if user:
-
-            print("\nUser found!")
-            print("--------------------------")
-            print(f"Full Name: {user['name']}")
-            print(f"Username: {user['username']}")
-            print("--------------------------")
+                if connection is not None:
+                    connection.close()
 
         else:
-            print("User not found.")
-
-    except ValueError as error:
-        print(f"Search error: {error}")
-
-    except sqlite3.Error as error:
-        print(f"Database error: {error}")
+            send_json_response(self, 404, {
+                "error": "Endpoint not found."
+            })
 
 
-# ==========================
-# USER DASHBOARD
-# ==========================
+    # ==========================
+    # HANDLE POST REQUESTS
+    # ==========================
 
-def dashboard(user):
+    def do_POST(self):
 
-    while True:
+        if self.path == "/register":
 
-        print("\n===== USER DASHBOARD =====")
-        print("1. View Profile")
-        print("2. Change Password")
-        print("3. Logout")
-        print("4. Delete Account")
-        print("==========================")
+            connection = None
 
-        choice = input("Enter your choice: ").strip()
+            try:
+                # Read registration details from Postman
+                data = read_json_request(self)
 
-        # ==========================
-        # VIEW USER PROFILE
-        # ==========================
+                # Extract user information
+                name = data.get("name")
+                username = data.get("username")
+                password = data.get("password")
+                confirm_password = data.get("confirm_password")
+                age = data.get("age")
 
-        if choice == "1":
+                # Validate required fields
+                required_fields = [
+                    name, username, password, confirm_password, age
+                ]
 
-            print("\n===== USER PROFILE =====")
+                if any(value is None for value in required_fields):
+                    raise ValueError("All fields are required.")
 
-            print(f"User ID: {user['id']}")
-            print(f"Full Name: {user['name']}")
-            print(f"Username: {user['username']}")
-            print(f"Age: {user['age']}")
+                # Validate text fields
+                text_fields = [
+                    name, username, password, confirm_password
+                ]
 
-            print(
-                f"Registration Date: "
-                f"{user['registration_date']}"
-            )
+                if not all(
+                    isinstance(value, str) and value.strip()
+                    for value in text_fields
+                ):
+                    raise ValueError(
+                        "Text fields must contain valid text."
+                    )
 
-            print("========================")
+                # Validate password length
+                if len(password) < 6:
+                    raise ValueError(
+                        "Password must contain at least 6 characters."
+                    )
 
-        # ==========================
-        # CHANGE PASSWORD
-        # ==========================
+                # Confirm passwords match
+                if password != confirm_password:
+                    raise ValueError("Passwords do not match.")
 
-        elif choice == "2":
+                # Validate age
+                if (
+                    isinstance(age, bool)
+                    or not isinstance(age, int)
+                    or age <= 0
+                ):
+                    raise ValueError("Age must be a positive integer.")
 
-            change_password(user)
+                # Hash the password
+                hashed_password = hash_password(password)
 
-        # ==========================
-        # LOGOUT
-        # ==========================
+                # Generate registration date
+                registration_date = datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
 
-        elif choice == "3":
+                # Connect to the database
+                connection = get_connection()
+                cursor = connection.cursor()
 
-            print("You have logged out successfully.")
-            break
+                # Insert user into the database
+                cursor.execute("""
+                    INSERT INTO users
+                    (name, username, password, age, registration_date)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    name.strip(),
+                    username.strip(),
+                    hashed_password,
+                    age,
+                    registration_date
+                ))
 
-        # ==========================
-        # DELETE ACCOUNT
-        # ==========================
+                # Save database changes
+                connection.commit()
 
-        elif choice == "4":
+                # Send successful response
+                send_json_response(self, 201, {
+                    "message": "Registration successful!"
+                })
 
-            deleted = delete_account(user)
+            except ValueError as error:
+                send_json_response(self, 400, {
+                    "error": str(error)
+                })
 
-            if deleted:
-                break
+            except sqlite3.IntegrityError:
+                send_json_response(self, 409, {
+                    "error": "Username already exists."
+                })
 
-        # ==========================
-        # INVALID CHOICE
-        # ==========================
+            except sqlite3.Error:
+                send_json_response(self, 500, {
+                    "error": "A database error occurred."
+                })
+
+            finally:
+                if connection is not None:
+                    connection.close()
 
         else:
+            send_json_response(self, 404, {
+                "error": "Endpoint not found."
+            })
 
-            print("Invalid choice. Please select 1, 2, 3, or 4.")
+
+    # ==========================
+    # HANDLE PUT REQUESTS
+    # ==========================
+
+    def do_PUT(self):
+
+        if self.path == "/change-password":
+
+            connection = None
+
+            try:
+                # Read data sent from Postman
+                data = read_json_request(self)
+
+                # Extract password information
+                username = data.get("username")
+                current_password = data.get("current_password")
+                new_password = data.get("new_password")
+                confirm_password = data.get("confirm_password")
+
+                # Validate required fields
+                if not all([
+                    username,
+                    current_password,
+                    new_password,
+                    confirm_password
+                ]):
+                    raise ValueError("All fields are required.")
+
+                # Validate field types
+                if not all(
+                    isinstance(value, str) and value.strip()
+                    for value in [
+                        username,
+                        current_password,
+                        new_password,
+                        confirm_password
+                    ]
+                ):
+                    raise ValueError("All fields must contain valid text.")
+
+                # Validate new password length
+                if len(new_password) < 6:
+                    raise ValueError(
+                        "New password must contain at least 6 characters."
+                    )
+
+                # Confirm new passwords match
+                if new_password != confirm_password:
+                    raise ValueError("New passwords do not match.")
+
+                # Connect to the database
+                connection = get_connection()
+                cursor = connection.cursor()
+
+                # Find the user using their username
+                cursor.execute(
+                    "SELECT * FROM users WHERE username = ?",
+                    (username.strip(),)
+                )
+
+                user = cursor.fetchone()
+
+                # Check whether the user exists
+                if user is None:
+                    send_json_response(self, 404, {
+                        "error": "User not found."
+                    })
+                    return
+
+                # Verify the current password
+                if not verify_password(current_password, user["password"]):
+                    send_json_response(self, 401, {
+                        "error": "Current password is incorrect."
+                    })
+                    return
+
+                # Hash the new password before saving it
+                hashed_password = hash_password(new_password)
+
+                # Update the user's password in the database
+                cursor.execute(
+                    "UPDATE users SET password = ? WHERE username = ?",
+                    (hashed_password, username.strip())
+                )
+
+                # Save changes to the database
+                connection.commit()
+
+                # Send success response
+                send_json_response(self, 200, {
+                    "message": "Password changed successfully!"
+                })
+
+            except ValueError as error:
+                send_json_response(self, 400, {
+                    "error": str(error)
+                })
+
+            except sqlite3.Error:
+                send_json_response(self, 500, {
+                    "error": "A database error occurred."
+                })
+
+            finally:
+                if connection is not None:
+                    connection.close()
+
+        else:
+            send_json_response(self, 404, {
+                "error": "Endpoint not found."
+            })
 
 
-            
+    # ==========================
+    # HANDLE DELETE REQUESTS
+    # ==========================
+
+    def do_DELETE(self):
+
+        if self.path == "/delete-account":
+
+            connection = None
+
+            try:
+                # Read request data from Postman
+                data = read_json_request(self)
+
+                username = data.get("username")
+                password = data.get("password")
+
+                # Validate required fields
+                if not username or not password:
+                    raise ValueError(
+                        "Username and password are required."
+                    )
+
+                if not isinstance(username, str) or not username.strip():
+                    raise ValueError("Invalid username.")
+
+                if not isinstance(password, str) or not password:
+                    raise ValueError("Invalid password.")
+
+                # Connect to database
+                connection = get_connection()
+                cursor = connection.cursor()
+
+                # Find user
+                cursor.execute(
+                    "SELECT * FROM users WHERE username = ?",
+                    (username.strip(),)
+                )
+
+                user = cursor.fetchone()
+
+                # Check whether the user exists
+                if user is None:
+                    send_json_response(self, 404, {
+                        "error": "User not found."
+                    })
+                    return
+
+                # Verify password
+                if not verify_password(password, user["password"]):
+                    send_json_response(self, 401, {
+                        "error": "Incorrect password."
+                    })
+                    return
+
+                # Delete user
+                cursor.execute(
+                    "DELETE FROM users WHERE id = ?",
+                    (user["id"],)
+                )
+
+                connection.commit()
+
+                # Send success response
+                send_json_response(self, 200, {
+                    "message": "Account deleted successfully."
+                })
+
+            except ValueError as error:
+                send_json_response(self, 400, {
+                    "error": str(error)
+                })
+
+            except sqlite3.Error:
+                send_json_response(self, 500, {
+                    "error": "A database error occurred."
+                })
+
+            finally:
+                if connection is not None:
+                    connection.close()
+
+        else:
+            send_json_response(self, 404, {
+                "error": "Endpoint not found."
+            })
+
+
 # ==========================
-# MAIN PROGRAM
+# START THE API SERVER
 # ==========================
 
-initialize_database()
+if __name__ == "__main__":
 
-while True:
-    main()
+    try:
+        # Create the database and users table
+        initialize_database()
 
-    choice = input("Enter a choice: ").strip()
+        # Create the HTTP server
+        server = HTTPServer((HOST, PORT), APIHandler)
 
-    if choice == "1":
-        register()
+        print("User Management API is running")
+        print(f"Server running at http://{HOST}:{PORT}")
+        print("Press CTRL + C to stop the server.")
 
-    elif choice == "2":
-        login()
+        # Keep the server running
+        server.serve_forever()
 
-    elif choice == "3":
-        search_user()
+    except KeyboardInterrupt:
+        print("\nServer stopped successfully.")
 
-    elif choice == "4":
-        print("Goodbye!")
-        break
+    except OSError as error:
+        print(f"Server startup error: {error}")
 
-    else:
-        print("Invalid choice. Please select 1, 2, 3 or 4.")
+    finally:
+        if "server" in locals():
+            server.server_close()
