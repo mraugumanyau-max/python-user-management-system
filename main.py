@@ -8,6 +8,7 @@ import hashlib
 import secrets
 import hmac
 import json
+import os
 
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -18,10 +19,14 @@ from urllib.parse import urlparse, parse_qs
 # APPLICATION CONFIGURATION
 # ==========================
 
-FILE_NAME = "users.db"
+# Get Railway's persistent storage directory
+DATA_DIRECTORY = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", ".")
 
-HOST = "localhost"
-PORT = 8000
+# Store the database inside that directory
+FILE_NAME = os.path.join(DATA_DIRECTORY, "users.db")
+
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("PORT", 8000))
 
 
 # ==========================
